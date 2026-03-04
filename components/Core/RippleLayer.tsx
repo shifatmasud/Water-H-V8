@@ -74,7 +74,7 @@ const RippleLayer: React.FC<RippleLayerProps> = ({
       <AnimatePresence>
         {ripples.map((ripple, index) => (
           <motion.div
-            key={`${ripple.id}-${index}`}
+            key={ripple.id}
             {...({
               initial: {
                 width: 0,

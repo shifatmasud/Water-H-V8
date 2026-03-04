@@ -140,7 +140,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, style
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '8px' }}>
                     {presets.map((color, index) => (
                         <motion.button
-                            key={`${color}-${index}`}
+                            key={index}
                             onClick={() => handlePresetClick(color)}
                             style={{
                                 width: '100%',

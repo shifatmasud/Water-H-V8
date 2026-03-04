@@ -8,12 +8,13 @@ import React, { useRef, useEffect } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
-import { WaterConfig, NoiseType, NoiseBlendingMode } from '../../../types/index.tsx';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { UnderwaterPass } from './UnderwaterPass';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { WaterConfig, NoiseType, NoiseBlendingMode } from '../../../types/index.tsx';
 import { createSandTexture } from './utils/createSandTexture.ts';
 import { godRayVertexShader, godRayFragmentShader } from './shaders/godray.ts';
+import { underwaterVertexShader, underwaterFragmentShader } from './shaders/underwater.ts';
 import { rippleVertexShader, rippleFragmentShader } from './shaders/ripple.ts';
 import { waterVertexShader, waterFragmentShader } from './shaders/water.ts';
 import { terrainVertexShader, terrainFragmentShader } from './shaders/terrain.ts';
@@ -49,6 +50,8 @@ let isProcessingHdr = false;
 const WaterScene: React.FC<WaterSceneProps> = ({ config, initialCameraState, sceneController, isSplitView }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const composerRef = useRef<EffectComposer | null>(null);
+  const underwaterPassRef = useRef<ShaderPass | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const frameIdRef = useRef<number>(0);
   const materialsRef = useRef<THREE.Material[]>([]);
@@ -78,9 +81,6 @@ const WaterScene: React.FC<WaterSceneProps> = ({ config, initialCameraState, sce
   const simMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
   const renderTargetA = useRef<THREE.WebGLRenderTarget | null>(null);
   const renderTargetB = useRef<THREE.WebGLRenderTarget | null>(null);
-  
-  const composerRef = useRef<EffectComposer | null>(null);
-  const underwaterPassRef = useRef<UnderwaterPass | null>(null);
   
   // Interaction Refs
   const raycaster = useRef(new THREE.Raycaster());
@@ -118,7 +118,7 @@ const WaterScene: React.FC<WaterSceneProps> = ({ config, initialCameraState, sce
     const width = containerRef.current.clientWidth;
     const height = containerRef.current.clientHeight;
 
-    const renderer = new THREE.WebGLRenderer({ alpha: false, antialias: false, powerPreference: 'high-performance' });
+    const renderer = new THREE.WebGLRenderer({ alpha: false, antialias: false, powerPreference: 'high-performance', stencil: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(1);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -126,6 +126,9 @@ const WaterScene: React.FC<WaterSceneProps> = ({ config, initialCameraState, sce
     containerRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
     
+    pmremGeneratorRef.current = new THREE.PMREMGenerator(renderer);
+    pmremGeneratorRef.current.compileEquirectangularShader();
+
     const scene = new THREE.Scene();
     sceneRef.current = scene;
     
@@ -137,28 +140,53 @@ const WaterScene: React.FC<WaterSceneProps> = ({ config, initialCameraState, sce
     if (initialCameraState) camera.position.set(...initialCameraState.position);
     else camera.position.set(0, 45, 160);
 
-    // --- POST-PROCESSING SETUP ---
-    const composer = new EffectComposer(renderer);
-    composerRef.current = composer;
-    const renderPass = new RenderPass(scene, camera);
-    composer.addPass(renderPass);
-
-    const depthTexture = new THREE.DepthTexture(width, height);
-    depthTexture.format = THREE.DepthFormat;
-    depthTexture.type = THREE.UnsignedShortType;
-    renderer.setRenderTarget(new THREE.WebGLRenderTarget(width, height, { depthTexture }));
-    
-    const underwaterPass = new UnderwaterPass(camera, configRef.current.waterLevel, new THREE.Texture(), depthTexture);
-    underwaterPassRef.current = underwaterPass;
-    composer.addPass(underwaterPass);
-    
-    pmremGeneratorRef.current = new THREE.PMREMGenerator(renderer);
-    pmremGeneratorRef.current.compileEquirectangularShader();
-
     const controls = new OrbitControls(camera, renderer.domElement);
     controlsRef.current = controls;
     controls.enableDamping = true;
     if (initialCameraState) controls.target.set(...initialCameraState.target);
+
+    // --- COMPOSER SETUP ---
+    const composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    renderPass.clearStencil = false;
+    composer.addPass(renderPass);
+
+    // --- UNDERWATER PASS ---
+    const underwaterPass = new ShaderPass({
+        uniforms: {
+            tDiffuse: { value: null },
+            uColor: { value: new THREE.Color(configRef.current.underwaterFogColor) },
+            uIntensity: { value: 0.5 }
+        },
+        vertexShader: underwaterVertexShader,
+        fragmentShader: underwaterFragmentShader
+    });
+    underwaterPass.renderToScreen = true;
+    // Stencil setup for the pass
+    underwaterPass.material.stencilWrite = true;
+    underwaterPass.material.stencilFunc = THREE.EqualStencilFunc;
+    underwaterPass.material.stencilRef = 1;
+    composer.addPass(underwaterPass);
+    
+    // Store in refs
+    (composerRef as any).current = composer;
+    (underwaterPassRef as any).current = underwaterPass;
+
+    // --- STENCIL VOLUME SETUP ---
+    const volumeGeo = new THREE.BoxGeometry(4000, 200, 4000);
+    const volumeMat = new THREE.MeshBasicMaterial({
+        colorWrite: false,
+        depthWrite: false,
+        stencilWrite: true,
+        stencilFunc: THREE.AlwaysStencilFunc,
+        stencilFail: THREE.ReplaceStencilOp,
+        stencilZFail: THREE.ReplaceStencilOp,
+        stencilZPass: THREE.ReplaceStencilOp,
+        stencilRef: 1
+    });
+    const volumeMesh = new THREE.Mesh(volumeGeo, volumeMat);
+    volumeMesh.position.y = -100;
+    scene.add(volumeMesh);
 
     // --- Scene Controller Setup ---
     if (sceneController) {
@@ -648,11 +676,19 @@ const WaterScene: React.FC<WaterSceneProps> = ({ config, initialCameraState, sce
             }
         }
 
+        // --- UPDATE UNDERWATER PASS ---
+        if (underwaterPassRef.current) {
+            underwaterPassRef.current.uniforms.uColor.value.set(target.underwaterFogColor);
+            underwaterPassRef.current.uniforms.uIntensity.value = target.underwaterDimming;
+        }
+
+        // Clear stencil buffer
+        renderer.clearStencil();
+
         controlsRef.current?.update();
         
         // Direct render instead of composer for better performance if no extra passes are used
         composerRef.current?.render();
-        underwaterPassRef.current?.update(time, configRef.current.waterLevel);
         
         frameIdRef.current = requestAnimationFrame(animate);
     };
@@ -786,6 +822,7 @@ const WaterScene: React.FC<WaterSceneProps> = ({ config, initialCameraState, sce
         }
         renderTargetA.current?.dispose();
         renderTargetB.current?.dispose();
+        composerRef.current?.dispose();
         
         // Clean up textures and generators
         pmremGeneratorRef.current?.dispose();
