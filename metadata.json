@@ -1,0 +1,5 @@
+{
+  "name": "Hybrid Water Simulation v8",
+  "description": "High-fidelity water simulation with procedural waves, ripple physics, and debug visualization tools.",
+  "requestFramePermissions": []
+}
